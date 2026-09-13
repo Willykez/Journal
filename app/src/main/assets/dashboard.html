@@ -1,0 +1,661 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Trade Journal Analyst</title>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet"/>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+tailwind.config = { theme: { extend: { colors: {
+  bg:'#0B0E14', panel:'#12161F', border:'#232B36', muted:'#7C8896', text:'#E8EDF2',
+  teal:'#29D9C2', green:'#3FB950', red:'#E5534B', amber:'#E8A23D'
+}, fontFamily: { sans:['Geist','system-ui','sans-serif'], mono:['JetBrains Mono','monospace'] } } } }
+</script>
+<style>
+  body { margin:0; background:#0B0E14; }
+  ::-webkit-scrollbar { display:none; }
+</style>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body class="font-sans text-text">
+<div id="root"></div>
+
+<script type="text/babel" data-presets="env,react">
+const { useState, useEffect, useMemo, useCallback } = React;
+
+const DEFAULT_URL = "https://script.google.com/macros/s/AKfycby9953ycUqa3gLBzxxG8nNcxKOPp4MMxoRH9BxKpy-CNCGdHprtm3E1H3JZQMmTZs_FlQ/exec";
+const C = { teal:'#29D9C2', green:'#3FB950', red:'#E5534B', amber:'#E8A23D', border:'#232B36', muted:'#7C8896' };
+
+function fmtMoney(n){ n = Number(n)||0; return (n>=0?'+$':'-$') + Math.abs(n).toFixed(2); }
+
+// ---------- Pure computation, no side effects — easy to test/reason about ----------
+function computeStats(trades){
+  if(!trades.length) return null;
+  const totalPnL = trades.reduce((s,t)=>s+Number(t.PnL||0),0);
+  const wins = trades.filter(t=>Number(t.PnL)>0);
+  const losses = trades.filter(t=>Number(t.PnL)<=0);
+  const winRate = Math.round(wins.length/trades.length*100);
+  const grossProfit = wins.reduce((s,t)=>s+Number(t.PnL||0),0);
+  const grossLoss = Math.abs(losses.reduce((s,t)=>s+Number(t.PnL||0),0));
+  const profitFactor = grossLoss>0 ? grossProfit/grossLoss : (grossProfit>0?Infinity:0);
+  const avgWin = wins.length ? grossProfit/wins.length : 0;
+  const avgLoss = losses.length ? grossLoss/losses.length : 0;
+  const payoff = avgLoss>0 ? avgWin/avgLoss : 0;
+  const expectancy = totalPnL/trades.length;
+  const wDec = winRate/100;
+  const kelly = payoff>0 ? Math.max(-1,Math.min(1, wDec-(1-wDec)/payoff)) : 0;
+
+  let running=0, peak=-Infinity;
+  const equity=[], drawdowns=[];
+  trades.forEach(t=>{ running+=Number(t.PnL||0); peak=Math.max(peak,running); equity.push(running); drawdowns.push(peak-running); });
+  const maxDD = Math.max(...drawdowns, 0);
+
+  const longTrades = trades.filter(t=>t.Direction==='Long');
+  const shortTrades = trades.filter(t=>t.Direction==='Short');
+  const longWR = longTrades.length ? Math.round(longTrades.filter(t=>Number(t.PnL)>0).length/longTrades.length*100) : 0;
+  const shortWR = shortTrades.length ? Math.round(shortTrades.filter(t=>Number(t.PnL)>0).length/shortTrades.length*100) : 0;
+
+  const rev = [...trades].reverse();
+  const streakType = Number(rev[0].PnL)>=0 ? 'win' : 'loss';
+  let streakCount = 0;
+  for(const t of rev){ const isWin = Number(t.PnL)>=0; if((streakType==='win'&&isWin)||(streakType==='loss'&&!isWin)) streakCount++; else break; }
+
+  const riskFlagCount = 0; // filled in by caller from analysis, kept separate since it's not trade-derived
+  const slCompliance = trades.filter(t=>t.StopLoss!==''&&t.StopLoss!==undefined&&t.StopLoss!==null).length/trades.length*100;
+
+  return { totalPnL, wins, losses, winRate, grossProfit, grossLoss, profitFactor, avgWin, avgLoss, payoff,
+    expectancy, kelly, equity, drawdowns, maxDD, longTrades, shortTrades, longWR, shortWR,
+    streakType, streakCount, count: trades.length, slCompliance };
+}
+
+// ---------- Custom hook: owns all data fetching + persistence ----------
+function useDashboardData(){
+  const [url, setUrl] = useState(() => localStorage.getItem('webAppUrl') || DEFAULT_URL);
+  const [trades, setTrades] = useState([]);
+  const [analysis, setAnalysis] = useState(null);
+  const [generatedAt, setGeneratedAt] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  const reload = useCallback(async (overrideUrl) => {
+    const target = overrideUrl || url;
+    setLoading(true); setError('');
+    try{
+      const res = await fetch(target);
+      if(!res.ok) throw new Error('Request failed: '+res.status);
+      const data = await res.json();
+      setTrades((data.trades||[]).filter(t=>t.Pair));
+      setAnalysis(data.analysis||null);
+      setGeneratedAt(data.generatedAt||null);
+      localStorage.setItem('webAppUrl', target);
+      setUrl(target);
+    }catch(err){
+      setError(err.message);
+    }finally{
+      setLoading(false);
+    }
+  }, [url]);
+
+  useEffect(() => { reload(); }, []); // initial load on mount
+
+  return { trades, analysis, generatedAt, loading, error, url, setUrl, reload };
+}
+
+async function postTrade(url, payload){
+  const res = await fetch(url, { method:'POST', body: JSON.stringify(payload) });
+  const result = await res.json();
+  if(!result.ok) throw new Error(result.error || 'Unknown error');
+  return result;
+}
+
+// ==================== COMPONENTS ====================
+
+function Header({ stats, loading, generatedAt, onToggleSettings, onLog }){
+  return (
+    <header className="sticky top-0 z-40 bg-[#0c0e13]/95 backdrop-blur-md border-b border-border">
+      <div className="px-4 py-3 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <div className="w-8 h-8 rounded bg-panel flex items-center justify-center font-mono text-sm font-bold text-teal">TJ</div>
+          <div>
+            <div className="text-base font-bold tracking-tight leading-none">Trade Journal Analyst</div>
+            <div className="flex items-center gap-1.5 mt-1">
+              <span className={`w-1.5 h-1.5 rounded-full ${loading ? 'bg-muted' : 'bg-green animate-pulse'}`}></span>
+              <span className="text-[10px] uppercase tracking-widest text-muted">
+                {loading ? 'Loading…' : `${stats ? stats.count : 0} trades · ${generatedAt ? new Date(generatedAt).toLocaleTimeString() : ''}`}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        {stats && (
+          <div className="hidden lg:flex items-center gap-5 px-4 py-1.5 bg-panel rounded">
+            <Stat label="Net P&L" value={fmtMoney(stats.totalPnL)} color={stats.totalPnL>=0?C.green:C.red}/>
+            <div className="w-px h-6 bg-border"/>
+            <Stat label="Win Rate" value={stats.winRate+'%'} color={C.teal}/>
+            <div className="w-px h-6 bg-border"/>
+            <Stat label="Profit Factor" value={isFinite(stats.profitFactor)?stats.profitFactor.toFixed(2):'∞'}/>
+          </div>
+        )}
+
+        <div className="flex items-center gap-2">
+          <button onClick={onLog} className="px-3 py-1.5 rounded bg-teal text-bg text-xs font-semibold hover:opacity-90">+ Log Execution</button>
+          <button onClick={onToggleSettings} className="px-2.5 py-1.5 rounded bg-panel text-text text-xs hover:bg-[#1a1e26]">⚙ Connect</button>
+        </div>
+      </div>
+    </header>
+  );
+}
+
+function Stat({ label, value, color }){
+  return (
+    <div className="flex flex-col">
+      <span className="text-[9px] text-muted uppercase">{label}</span>
+      <span className="font-mono text-sm font-semibold" style={{color: color || '#E8EDF2'}}>{value}</span>
+    </div>
+  );
+}
+
+function SettingsPanel({ url, onLoad, error }){
+  const [value, setValue] = useState(url);
+  return (
+    <div className="px-4 py-3 bg-panel border-b border-border">
+      <div className="flex gap-2 flex-wrap items-center">
+        <span className="text-xs text-muted">Apps Script Web App URL</span>
+        <input value={value} onChange={e=>setValue(e.target.value)} placeholder="https://script.google.com/macros/s/.../exec"
+          className="flex-1 min-w-[240px] bg-bg border border-border rounded px-2 py-1.5 text-xs font-mono text-text"/>
+        <button onClick={()=>onLoad(value)} className="px-3 py-1.5 rounded bg-teal text-bg text-xs font-semibold">Load</button>
+      </div>
+      {error && <div className="text-red text-xs mt-2">Could not load — check the URL and deployment access. ({error})</div>}
+    </div>
+  );
+}
+
+function WinRateGauge({ stats }){
+  const r = 50, circumference = 2*Math.PI*r;
+  const winRate = stats.winRate;
+  const color = winRate>=60 ? C.green : winRate>=45 ? C.amber : C.red;
+  const offset = circumference - (winRate/100)*circumference;
+  return (
+    <div className="bg-panel border border-border rounded-lg p-5 flex flex-col items-center gap-4">
+      <div className="relative w-32 h-32">
+        <svg className="w-32 h-32 -rotate-90" viewBox="0 0 120 120">
+          <circle cx="60" cy="60" r={r} fill="none" stroke="#232B36" strokeWidth="9"/>
+          <circle cx="60" cy="60" r={r} fill="none" stroke={color} strokeWidth="9"
+            strokeDasharray={circumference} strokeDashoffset={offset} strokeLinecap="round"
+            style={{filter:`drop-shadow(0 0 6px ${color}66)`, transition:'stroke-dashoffset 0.8s ease'}}/>
+        </svg>
+        <div className="absolute inset-0 flex flex-col items-center justify-center">
+          <span className="font-mono text-2xl font-bold">{winRate}%</span>
+          <span className="text-[9px] text-muted mt-1 tracking-widest uppercase">Win Rate</span>
+        </div>
+      </div>
+      <div className="w-full flex flex-col gap-1.5 text-xs font-mono">
+        <Row label="Total trades" value={stats.count}/>
+        <Row label="Win / Loss" value={`${stats.wins.length}W / ${stats.losses.length}L`} muted/>
+        <div className="h-px bg-border my-1"/>
+        <Row label="Long edge" value={`${stats.longWR}% (${stats.longTrades.length}T)`} color={C.green}/>
+        <Row label="Short edge" value={`${stats.shortWR}% (${stats.shortTrades.length}T)`} color={C.teal}/>
+      </div>
+      <div className={`w-full flex items-center justify-center gap-2 px-3 py-1.5 rounded-full text-xs font-mono ${stats.streakType==='win'?'bg-green/10 text-green':'bg-red/10 text-red'}`}>
+        {stats.streakType==='win' ? '🔥' : '❄️'} {stats.streakCount} {stats.streakType} streak
+      </div>
+    </div>
+  );
+}
+
+function Row({ label, value, color, muted }){
+  return (
+    <div className="flex items-center justify-between">
+      <span className="text-[9px] text-muted uppercase">{label}</span>
+      <span style={{color: color}} className={muted?'text-muted':''}>{value}</span>
+    </div>
+  );
+}
+
+function AIBriefing({ analysis, stats }){
+  const a = analysis || { summary:'No analysis yet — run "Run analysis now" from the sheet menu.', patterns:[], riskFlags:[], recommendations:[], bestPair:'—', bestSession:'—' };
+  return (
+    <div className="bg-panel border border-border rounded-lg p-5 border-l-4" style={{borderLeftColor:C.teal}}>
+      <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+        <span className="px-2 py-0.5 rounded bg-teal/10 text-teal text-[10px] font-bold tracking-widest flex items-center gap-1.5">
+          <span className="w-1.5 h-1.5 rounded-full bg-teal animate-pulse"></span> AI ANALYST BRIEFING
+        </span>
+        <div className="flex items-center gap-2 text-[10px]">
+          <span className="text-muted uppercase">Expectancy:</span>
+          <span className="font-mono font-semibold text-green">{fmtMoney(stats.expectancy)} /trade</span>
+        </div>
+      </div>
+      <p className="font-mono text-sm leading-relaxed mb-4">{a.summary}</p>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <div className="bg-bg/60 rounded-lg p-3 border-l-2 border-green">
+          <div className="text-xs font-semibold mb-1 flex items-center gap-1.5">⚡ What's working</div>
+          <p className="text-xs text-muted leading-relaxed">{(a.patterns&&a.patterns[0]) || `Best pair: ${a.bestPair} · Best session: ${a.bestSession}`}</p>
+        </div>
+        <div className="bg-bg/60 rounded-lg p-3 border-l-2 border-red">
+          <div className="text-xs font-semibold mb-1 flex items-center gap-1.5">⚠ Risk flag</div>
+          <p className="text-xs text-muted leading-relaxed">{(a.riskFlags&&a.riskFlags[0]) || 'No risk flags detected in the latest analysis.'}</p>
+        </div>
+      </div>
+      {a.recommendations && a.recommendations.length>0 && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 mt-3">
+          {a.recommendations.map((r,i)=>(
+            <div key={i} className="bg-bg/60 rounded px-2.5 py-1.5 text-[11px] text-muted flex gap-1.5">
+              <span className="text-teal font-mono">{String(i+1).padStart(2,'0')}</span>{r}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function KpiCard({ label, value, color, sub, children }){
+  return (
+    <div className="bg-panel border border-border rounded-lg p-3 flex flex-col justify-between">
+      <span className="text-[9px] uppercase text-muted mb-1">{label}</span>
+      <div className="font-mono text-lg font-bold" style={{color: color || '#E8EDF2'}}>{value}</div>
+      {sub && <div className="text-[10px] text-muted mt-1">{sub}</div>}
+      {children}
+    </div>
+  );
+}
+
+function KpiGrid({ stats, analysis }){
+  const riskFlagCount = (analysis && analysis.riskFlags ? analysis.riskFlags.length : 0);
+  const discipline = Math.max(0, Math.min(100, Math.round(100 - riskFlagCount*15)));
+  const pfPct = (stats.grossProfit+stats.grossLoss) > 0 ? stats.grossProfit/(stats.grossProfit+stats.grossLoss)*100 : 50;
+
+  return (
+    <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
+      <KpiCard label="Net P&L" value={fmtMoney(stats.totalPnL)} color={stats.totalPnL>=0?C.green:C.red}/>
+      <KpiCard label="Profit Factor" value={isFinite(stats.profitFactor)?stats.profitFactor.toFixed(2):'∞'}>
+        <div className="w-full h-1.5 bg-[#33353b] rounded-full overflow-hidden mt-1.5 flex">
+          <div className="h-full bg-green" style={{width:pfPct+'%'}}/>
+          <div className="h-full bg-red" style={{width:(100-pfPct)+'%'}}/>
+        </div>
+      </KpiCard>
+      <KpiCard label="Expectancy / Trade" value={fmtMoney(stats.expectancy)} color={stats.expectancy>=0?C.green:C.red}
+        sub={`W: ${fmtMoney(stats.avgWin)} · L: -$${stats.avgLoss.toFixed(0)}`}/>
+      <KpiCard label="Kelly Criterion" value={(stats.kelly*100).toFixed(1)+'%'} sub="Suggested sizing"/>
+      <KpiCard label="Max Drawdown" value={'-$'+stats.maxDD.toFixed(0)} color={C.red}/>
+      <KpiCard label="Discipline Score" value={discipline+'/100'} sub={`${riskFlagCount} flag(s) · ${Math.round(stats.slCompliance)}% have stop loss`}/>
+    </div>
+  );
+}
+
+function EquityCurve({ stats }){
+  const W=700, H=180, pad=10;
+  const { equity, drawdowns, maxDD } = stats;
+  const minE = Math.min(0, ...equity), maxE = Math.max(0, ...equity);
+  const range = (maxE-minE) || 1;
+  const xStep = equity.length>1 ? (W-pad*2)/(equity.length-1) : 0;
+  const toY = v => H-pad-((v-minE)/range)*(H-pad*2);
+  const points = equity.map((v,i)=>[pad+i*xStep, toY(v)]);
+  const linePath = points.map((p,i)=>(i===0?'M':'L')+p[0].toFixed(1)+','+p[1].toFixed(1)).join(' ');
+  const fillPath = linePath + ` L${points[points.length-1][0].toFixed(1)},${H} L${points[0][0].toFixed(1)},${H} Z`;
+  let peakRun=-Infinity;
+  const hwmPoints = equity.map(v=>{ peakRun=Math.max(peakRun,v); return toY(peakRun); });
+  const hwmPath = hwmPoints.map((y,i)=>(i===0?'M':'L')+(pad+i*xStep).toFixed(1)+','+y.toFixed(1)).join(' ');
+  const maxDDforBars = Math.max(...drawdowns, 1);
+
+  return (
+    <div className="bg-panel border border-border rounded-lg p-5 flex flex-col gap-3">
+      <div className="flex items-center justify-between">
+        <span className="text-sm font-semibold">Cumulative Equity Curve</span>
+        <span className="text-[10px] font-mono text-muted">Trade #1 → #{equity.length} · Net {fmtMoney(stats.totalPnL)}</span>
+      </div>
+      <div className="w-full h-44 bg-bg/60 rounded-lg p-3">
+        <svg className="w-full h-full" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none">
+          <defs>
+            <linearGradient id="eqGrad" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor={C.teal} stopOpacity="0.32"/>
+              <stop offset="100%" stopColor="#111319" stopOpacity="0"/>
+            </linearGradient>
+          </defs>
+          <path d={hwmPath} fill="none" stroke="#dbfcff" strokeDasharray="2 4" strokeOpacity="0.3" strokeWidth="1"/>
+          <path d={fillPath} fill="url(#eqGrad)"/>
+          <path d={linePath} fill="none" stroke={C.teal} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
+            style={{filter:'drop-shadow(0 0 6px rgba(41,217,194,0.4))'}}/>
+        </svg>
+      </div>
+      <div className="bg-bg/60 rounded-lg p-3">
+        <div className="flex items-center justify-between text-[10px] font-mono mb-1.5">
+          <span className="uppercase text-muted">Underwater Drawdown Profile</span>
+          <span className="text-muted">MAX: -${maxDD.toFixed(0)}</span>
+        </div>
+        <div className="h-9 w-full flex items-end gap-0.5">
+          {drawdowns.map((d,i)=>(
+            <div key={i} className={`flex-1 rounded-t ${d>0?'bg-red/80':'bg-[#1d2025]'}`}
+              style={{height: Math.max(2, Math.round((d/maxDDforBars)*36))+'px'}}
+              title={`Trade ${i+1}: -$${d.toFixed(0)} underwater`}/>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PairAttribution({ trades }){
+  const pairMap = {};
+  trades.forEach(t=>{
+    if(!pairMap[t.Pair]) pairMap[t.Pair] = { pnl:0, count:0, wins:0 };
+    pairMap[t.Pair].pnl += Number(t.PnL||0);
+    pairMap[t.Pair].count++;
+    if(Number(t.PnL)>0) pairMap[t.Pair].wins++;
+  });
+  const pairArr = Object.entries(pairMap).map(([pair,d])=>({pair,...d, wr: Math.round(d.wins/d.count*100)})).sort((a,b)=>b.pnl-a.pnl).slice(0,6);
+  const maxPairPnl = Math.max(...pairArr.map(p=>Math.abs(p.pnl)), 1);
+
+  return (
+    <div className="bg-panel border border-border rounded-lg p-5 flex flex-col gap-3">
+      <span className="text-sm font-semibold">Pair Attribution</span>
+      <div className="flex flex-col gap-2.5">
+        {pairArr.map(p=>(
+          <div key={p.pair} className="flex flex-col gap-1">
+            <div className="flex items-center justify-between text-xs font-mono">
+              <div className="flex items-center gap-1.5"><span className="font-semibold">{p.pair}</span><span className="text-muted text-[10px]">({p.count}T)</span></div>
+              <div className="flex items-center gap-2">
+                <span style={{color: p.pnl>=0?C.green:C.red}} className="font-semibold">{fmtMoney(p.pnl)}</span>
+                <span className="px-1 rounded bg-bg text-[9px] text-teal">{p.wr}% WR</span>
+              </div>
+            </div>
+            <div className="w-full h-1.5 bg-bg rounded-full overflow-hidden">
+              <div className="h-full rounded-full" style={{width:(Math.abs(p.pnl)/maxPairPnl*100)+'%', background: p.pnl>=0?C.green:C.red}}/>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function SessionPerformance({ trades }){
+  const sessMap = {};
+  trades.forEach(t=>{
+    if(!sessMap[t.Session]) sessMap[t.Session] = { count:0, wins:0, pnl:0 };
+    sessMap[t.Session].count++;
+    sessMap[t.Session].pnl += Number(t.PnL||0);
+    if(Number(t.PnL)>0) sessMap[t.Session].wins++;
+  });
+  const sessArr = Object.entries(sessMap).map(([session,d])=>({session,...d, wr: Math.round(d.wins/d.count*100)})).sort((a,b)=>b.pnl-a.pnl);
+
+  return (
+    <div className="bg-panel border border-border rounded-lg p-5 flex flex-col gap-2">
+      <span className="text-sm font-semibold mb-1">Session Performance</span>
+      {sessArr.map((s,i)=>(
+        <div key={s.session} className="bg-bg/60 rounded p-2.5 flex items-center justify-between">
+          <div className="flex items-center gap-1.5">
+            <span className={`w-1.5 h-1.5 rounded-full ${i===0?'bg-green':'bg-muted'}`}></span>
+            <span className="text-xs font-semibold">{s.session}{i===0?' · PRIME':''}</span>
+          </div>
+          <div className="text-right">
+            <div className="text-xs font-bold" style={{color: s.pnl>=0?C.green:C.red}}>{fmtMoney(s.pnl)}</div>
+            <span className="text-[10px] text-teal font-medium">{s.wr}% WR ({s.count}T)</span>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function Heatmap({ trades }){
+  const dayMap = {};
+  trades.forEach(t=>{ if(!dayMap[t.Date]) dayMap[t.Date]=0; dayMap[t.Date]+=Number(t.PnL||0); });
+  const days = Object.keys(dayMap).sort();
+  const maxAbsDay = Math.max(...days.map(d=>Math.abs(dayMap[d])), 1);
+
+  return (
+    <div className="bg-panel border border-border rounded-lg p-4 flex flex-col gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="text-sm font-semibold">Daily Performance ({days.length} trading days)</span>
+        <div className="flex items-center gap-3 text-[10px] font-mono">
+          <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-[#1d2025]"></span>No trades</span>
+          <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-red/70"></span>Loss</span>
+          <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-green"></span>Win</span>
+        </div>
+      </div>
+      <div className="grid grid-cols-7 sm:grid-cols-11 md:grid-cols-16 gap-1.5">
+        {days.map(d=>{
+          const v = dayMap[d];
+          const inten = Math.min(1, Math.abs(v)/maxAbsDay);
+          const bg = v>0 ? `rgba(63,185,80,${0.25+inten*0.6})` : v<0 ? `rgba(229,83,75,${0.25+inten*0.6})` : '#1d2025';
+          return (
+            <div key={d} className="h-10 rounded flex flex-col items-center justify-center transition-transform hover:scale-105 cursor-pointer"
+              style={{background:bg}} title={`${d}: ${fmtMoney(v)}`}>
+              <span className="text-[8px] font-mono">{d.slice(5)}</span>
+              <span className="text-[8px] font-mono font-semibold">{v>=0?'+':''}{Math.round(v)}</span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function Ledger({ trades, onAudit }){
+  const [filter, setFilter] = useState('ALL');
+  const sessions = useMemo(() => [...new Set(trades.map(t=>t.Session))], [trades]);
+  const filtered = filter==='ALL' ? trades : trades.filter(t=>t.Session===filter);
+
+  return (
+    <div className="bg-panel border border-border rounded-lg p-5 flex flex-col gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-semibold">Execution Ledger</span>
+          <span className="px-2 py-0.5 rounded bg-[#282a30] text-[10px] font-mono text-teal font-semibold">{filtered.length} / {trades.length}</span>
+        </div>
+        <div className="flex items-center gap-1 bg-bg rounded px-2 py-1 text-[10px] font-mono">
+          <span className="text-muted">SESSION:</span>
+          <button onClick={()=>setFilter('ALL')} className={filter==='ALL'?'text-teal font-semibold':'text-muted'}>ALL</button>
+          {sessions.map(s=>(
+            <React.Fragment key={s}>
+              <span className="text-border">·</span>
+              <button onClick={()=>setFilter(s)} className={filter===s?'text-teal font-semibold':'text-muted hover:text-text'}>{s}</button>
+            </React.Fragment>
+          ))}
+        </div>
+      </div>
+      <div className="w-full overflow-x-auto">
+        <table className="w-full text-left border-collapse text-xs font-mono">
+          <thead>
+            <tr className="bg-bg text-[10px] text-muted uppercase tracking-wider">
+              <th className="py-2 px-2.5">Side</th><th className="py-2 px-2.5">Pair</th><th className="py-2 px-2.5">Entry / Exit</th>
+              <th className="py-2 px-2.5">Date</th><th className="py-2 px-2.5">Session</th>
+              <th className="py-2 px-2.5 text-right">Net P&L</th><th className="py-2 px-2.5">Notes</th><th className="py-2 px-2.5 text-center">Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.slice().reverse().map((t,idx)=>{
+              const isLong = t.Direction==='Long';
+              const isWin = Number(t.PnL)>=0;
+              return (
+                <tr key={idx} className="border-b border-border hover:bg-bg/40">
+                  <td className="px-2.5 py-2">
+                    <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${isLong?'bg-green/15 text-green':'bg-red/15 text-red'}`}>{isLong?'▲':'▼'} {t.Direction}</span>
+                  </td>
+                  <td className="px-2.5 py-2 font-semibold">{t.Pair}</td>
+                  <td className="px-2.5 py-2 text-muted">{t.Entry} → <span style={{color:isWin?C.green:C.red}}>{t.Exit}</span></td>
+                  <td className="px-2.5 py-2 text-muted text-[11px]">{t.Date}</td>
+                  <td className="px-2.5 py-2 text-muted">{t.Session}</td>
+                  <td className="px-2.5 py-2 text-right font-bold" style={{color:isWin?C.green:C.red}}>{fmtMoney(t.PnL)}</td>
+                  <td className="px-2.5 py-2 text-muted text-[11px] max-w-[200px] truncate">{t.Notes||''}</td>
+                  <td className="px-2.5 py-2 text-center">
+                    <button onClick={()=>onAudit(t)} className="px-2 py-0.5 rounded bg-bg hover:bg-[#282a30] text-teal text-[10px]">View</button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function AuditDrawer({ trade, onClose }){
+  if(!trade) return null;
+  return (
+    <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-panel border border-border rounded-lg p-5 w-full max-w-md flex flex-col gap-3" onClick={e=>e.stopPropagation()}>
+        <div className="flex items-center justify-between">
+          <span className="text-sm font-semibold">{trade.Pair} — {trade.Date}</span>
+          <button onClick={onClose} className="text-muted hover:text-text">✕</button>
+        </div>
+        <div className="bg-bg rounded p-3 flex flex-col gap-2 text-xs font-mono">
+          <Row label="Direction" value={trade.Direction}/>
+          <Row label="Entry / Exit" value={`${trade.Entry} / ${trade.Exit}`}/>
+          <Row label="Size" value={trade.Size}/>
+          <Row label="Stop Loss" value={trade.StopLoss || 'not set'}/>
+          <Row label="Take Profit" value={trade.TakeProfit || 'not set'}/>
+          <Row label="Net P&L" value={fmtMoney(trade.PnL)} color={Number(trade.PnL)>=0?C.green:C.red}/>
+          <Row label="Session" value={trade.Session}/>
+          <div className="pt-1 border-t border-border">
+            <span className="text-muted">Notes</span>
+            <div className="mt-1 text-text">{trade.Notes || '—'}</div>
+          </div>
+        </div>
+        <button onClick={onClose} className="w-full py-2 rounded bg-[#282a30] text-xs font-semibold">Dismiss</button>
+      </div>
+    </div>
+  );
+}
+
+function LogExecutionModal({ open, onClose, onSubmit }){
+  const [direction, setDirection] = useState('Long');
+  const [form, setForm] = useState({ Pair:'', Entry:'', Exit:'', Size:'1', StopLoss:'', TakeProfit:'', PnL:'', Session:'London', Notes:'', Date: new Date().toISOString().slice(0,10) });
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState('');
+
+  if(!open) return null;
+
+  function update(field, value){ setForm(f => ({...f, [field]: value})); }
+
+  async function submit(e){
+    e.preventDefault();
+    setErr('');
+    if(!form.Pair || form.PnL===''){ setErr('Pair and Net P&L are required.'); return; }
+    setSaving(true);
+    try{
+      await onSubmit({ ...form, Direction: direction });
+      onClose();
+    }catch(error){
+      setErr('Could not save — '+error.message+'. Make sure the Apps Script was redeployed as a new version after adding doPost.');
+    }finally{
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-md flex items-center justify-center p-4">
+      <div className="bg-panel border border-border rounded-lg p-5 w-full max-w-lg">
+        <div className="flex items-center justify-between pb-3">
+          <span className="text-sm font-semibold">Log Execution</span>
+          <button onClick={onClose} className="text-muted hover:text-text">✕</button>
+        </div>
+        <form onSubmit={submit} className="flex flex-col gap-3">
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Pair"><input required value={form.Pair} onChange={e=>update('Pair', e.target.value)} placeholder="EUR/USD" className="bg-bg rounded p-2 text-xs font-mono w-full"/></Field>
+            <div className="flex flex-col gap-1">
+              <label className="text-[9px] uppercase text-muted">Direction</label>
+              <div className="grid grid-cols-2 gap-1">
+                <button type="button" onClick={()=>setDirection('Long')} className={`rounded py-1.5 text-xs font-bold ${direction==='Long'?'bg-green/20 text-green ring-1 ring-green':'bg-bg text-muted'}`}>Long</button>
+                <button type="button" onClick={()=>setDirection('Short')} className={`rounded py-1.5 text-xs font-bold ${direction==='Short'?'bg-red/20 text-red ring-1 ring-red':'bg-bg text-muted'}`}>Short</button>
+              </div>
+            </div>
+          </div>
+          <div className="grid grid-cols-3 gap-2">
+            <Field label="Entry"><input type="number" step="any" value={form.Entry} onChange={e=>update('Entry', e.target.value)} className="bg-bg rounded p-2 text-xs font-mono w-full text-right"/></Field>
+            <Field label="Exit"><input type="number" step="any" value={form.Exit} onChange={e=>update('Exit', e.target.value)} className="bg-bg rounded p-2 text-xs font-mono w-full text-right"/></Field>
+            <Field label="Size"><input type="number" step="any" value={form.Size} onChange={e=>update('Size', e.target.value)} className="bg-bg rounded p-2 text-xs font-mono w-full text-right"/></Field>
+          </div>
+          <div className="grid grid-cols-3 gap-2">
+            <Field label="Stop Loss"><input type="number" step="any" value={form.StopLoss} onChange={e=>update('StopLoss', e.target.value)} className="bg-bg rounded p-2 text-xs font-mono w-full text-right"/></Field>
+            <Field label="Take Profit"><input type="number" step="any" value={form.TakeProfit} onChange={e=>update('TakeProfit', e.target.value)} className="bg-bg rounded p-2 text-xs font-mono w-full text-right"/></Field>
+            <Field label="Net P&L ($)"><input required type="number" step="any" value={form.PnL} onChange={e=>update('PnL', e.target.value)} className="bg-bg rounded p-2 text-xs font-mono w-full text-right text-green font-bold"/></Field>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Date"><input type="date" value={form.Date} onChange={e=>update('Date', e.target.value)} className="bg-bg rounded p-2 text-xs font-mono w-full"/></Field>
+            <Field label="Session">
+              <select value={form.Session} onChange={e=>update('Session', e.target.value)} className="bg-bg rounded p-2 text-xs font-mono w-full">
+                <option>London</option><option>NY</option><option>Asia</option>
+              </select>
+            </Field>
+          </div>
+          <Field label="Notes"><textarea rows="2" value={form.Notes} onChange={e=>update('Notes', e.target.value)} placeholder="Setup reason, what happened..." className="bg-bg rounded p-2 text-xs w-full"/></Field>
+          {err && <div className="text-red text-xs">{err}</div>}
+          <div className="flex items-center justify-end gap-2 pt-1">
+            <button type="button" onClick={onClose} className="px-4 py-1.5 rounded bg-bg text-xs">Cancel</button>
+            <button type="submit" disabled={saving} className="px-5 py-1.5 rounded bg-teal text-bg text-xs font-bold">{saving?'Saving…':'Commit to Sheet'}</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function Field({ label, children }){
+  return <div className="flex flex-col gap-1"><label className="text-[9px] uppercase text-muted">{label}</label>{children}</div>;
+}
+
+// ==================== APP ROOT ====================
+
+function App(){
+  const { trades, analysis, generatedAt, loading, error, url, reload } = useDashboardData();
+  const [showSettings, setShowSettings] = useState(false);
+  const [showLogModal, setShowLogModal] = useState(false);
+  const [auditTrade, setAuditTrade] = useState(null);
+
+  const stats = useMemo(() => trades.length ? computeStats(trades) : null, [trades]);
+
+  async function handleSubmitTrade(payload){
+    await postTrade(url, payload);
+    await reload();
+  }
+
+  return (
+    <div className="min-h-screen">
+      <Header stats={stats} loading={loading} generatedAt={generatedAt}
+        onToggleSettings={()=>setShowSettings(s=>!s)} onLog={()=>setShowLogModal(true)}/>
+      {showSettings && <SettingsPanel url={url} onLoad={reload} error={error}/>}
+
+      <main className="max-w-[1200px] mx-auto px-4 py-5 flex flex-col gap-5">
+        {!stats ? (
+          <div className="bg-panel border border-border rounded-lg p-10 text-center text-muted text-sm">
+            {loading ? 'Loading your trades…' : 'No trades logged yet. Add rows to your Trades tab, or use "+ Log Execution" above.'}
+          </div>
+        ) : (
+          <React.Fragment>
+            <section className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+              <div className="lg:col-span-4"><WinRateGauge stats={stats}/></div>
+              <div className="lg:col-span-8"><AIBriefing analysis={analysis} stats={stats}/></div>
+            </section>
+
+            <KpiGrid stats={stats} analysis={analysis}/>
+
+            <section className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
+              <div className="lg:col-span-8"><EquityCurve stats={stats}/></div>
+              <div className="lg:col-span-4 flex flex-col gap-4">
+                <PairAttribution trades={trades}/>
+                <SessionPerformance trades={trades}/>
+              </div>
+            </section>
+
+            <Heatmap trades={trades}/>
+            <Ledger trades={trades} onAudit={setAuditTrade}/>
+          </React.Fragment>
+        )}
+      </main>
+
+      <LogExecutionModal open={showLogModal} onClose={()=>setShowLogModal(false)} onSubmit={handleSubmitTrade}/>
+      <AuditDrawer trade={auditTrade} onClose={()=>setAuditTrade(null)}/>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>
