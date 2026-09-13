@@ -18,12 +18,13 @@ tailwind.config = { theme: { extend: { colors: {
 </style>
 <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
-<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<!-- FIX: Pin to v7.23.9 to avoid the ES module injection regression in babel standalone 8.x -->
+<script src="https://unpkg.com/@babel/standalone@7.23.9/babel.min.js"></script>
 </head>
 <body class="font-sans text-text">
 <div id="root"></div>
 
-<script type="text/babel" data-presets="env,react">
+<script type="text/babel" data-presets="react">
 const { useState, useEffect, useMemo, useCallback } = React;
 
 const DEFAULT_URL = "https://script.google.com/macros/s/AKfycby9953ycUqa3gLBzxxG8nNcxKOPp4MMxoRH9BxKpy-CNCGdHprtm3E1H3JZQMmTZs_FlQ/exec";
@@ -31,7 +32,6 @@ const C = { teal:'#29D9C2', green:'#3FB950', red:'#E5534B', amber:'#E8A23D', bor
 
 function fmtMoney(n){ n = Number(n)||0; return (n>=0?'+$':'-$') + Math.abs(n).toFixed(2); }
 
-// ---------- Pure computation, no side effects — easy to test/reason about ----------
 function computeStats(trades){
   if(!trades.length) return null;
   const totalPnL = trades.reduce((s,t)=>s+Number(t.PnL||0),0);
@@ -63,7 +63,7 @@ function computeStats(trades){
   let streakCount = 0;
   for(const t of rev){ const isWin = Number(t.PnL)>=0; if((streakType==='win'&&isWin)||(streakType==='loss'&&!isWin)) streakCount++; else break; }
 
-  const riskFlagCount = 0; // filled in by caller from analysis, kept separate since it's not trade-derived
+  const riskFlagCount = 0; 
   const slCompliance = trades.filter(t=>t.StopLoss!==''&&t.StopLoss!==undefined&&t.StopLoss!==null).length/trades.length*100;
 
   return { totalPnL, wins, losses, winRate, grossProfit, grossLoss, profitFactor, avgWin, avgLoss, payoff,
@@ -71,7 +71,6 @@ function computeStats(trades){
     streakType, streakCount, count: trades.length, slCompliance };
 }
 
-// ---------- Custom hook: owns all data fetching + persistence ----------
 function useDashboardData(){
   const [url, setUrl] = useState(() => localStorage.getItem('webAppUrl') || DEFAULT_URL);
   const [trades, setTrades] = useState([]);
@@ -99,7 +98,7 @@ function useDashboardData(){
     }
   }, [url]);
 
-  useEffect(() => { reload(); }, []); // initial load on mount
+  useEffect(() => { reload(); }, []);
 
   return { trades, analysis, generatedAt, loading, error, url, setUrl, reload };
 }
@@ -110,8 +109,6 @@ async function postTrade(url, payload){
   if(!result.ok) throw new Error(result.error || 'Unknown error');
   return result;
 }
-
-// ==================== COMPONENTS ====================
 
 function Header({ stats, loading, generatedAt, onToggleSettings, onLog }){
   return (
@@ -599,8 +596,6 @@ function LogExecutionModal({ open, onClose, onSubmit }){
 function Field({ label, children }){
   return <div className="flex flex-col gap-1"><label className="text-[9px] uppercase text-muted">{label}</label>{children}</div>;
 }
-
-// ==================== APP ROOT ====================
 
 function App(){
   const { trades, analysis, generatedAt, loading, error, url, reload } = useDashboardData();
