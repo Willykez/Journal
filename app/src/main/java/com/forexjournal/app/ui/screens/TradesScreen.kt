@@ -51,7 +51,7 @@ fun TradesScreen(trades: List<Trade>, modifier: Modifier = Modifier) {
             "${filtered.size} / ${trades.size} trades",
             fontSize = 11.sp,
             color = AppMuted,
-            modifier = Modifier.padding(horizontal = 16.dp, bottom = 6.dp)
+            modifier = Modifier.padding(horizontal = 16.dp).padding(bottom = 6.dp)
         )
 
         LazyColumn(
