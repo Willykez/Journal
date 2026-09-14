@@ -19,6 +19,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.forexjournal.app.ui.theme.AppAmber
@@ -29,8 +30,19 @@ import com.forexjournal.app.ui.theme.AppRed
 import com.forexjournal.app.ui.theme.AppText
 import com.forexjournal.app.ui.theme.MonoFont
 
+/**
+ * @param diameter lets this be reused both large (detail sheet, 148dp) and
+ * small (home screen hero row, ~72dp) without duplicating the drawing logic.
+ * @param showLabel hides the "WIN RATE" caption in compact contexts where
+ * space is tight and the surrounding UI already labels it.
+ */
 @Composable
-fun WinRateGauge(winRate: Int, modifier: Modifier = Modifier) {
+fun WinRateGauge(
+    winRate: Int,
+    modifier: Modifier = Modifier,
+    diameter: Dp = 148.dp,
+    showLabel: Boolean = true
+) {
     val baseColor = when {
         winRate >= 60 -> AppGreen
         winRate >= 45 -> AppAmber
@@ -42,35 +54,36 @@ fun WinRateGauge(winRate: Int, modifier: Modifier = Modifier) {
         label = "gaugeSweep"
     )
 
-    Box(modifier = modifier.size(148.dp), contentAlignment = Alignment.Center) {
-        // Soft ambient glow behind the ring, tinted to the current state color
+    val strokeWidth = (diameter.value * 0.088f).dp
+    val valueFontSize = (diameter.value * 0.20f).sp
+    val labelFontSize = (diameter.value * 0.068f).sp
+
+    Box(modifier = modifier.size(diameter), contentAlignment = Alignment.Center) {
         Box(
             modifier = Modifier
-                .size(148.dp)
+                .size(diameter)
                 .background(
                     Brush.radialGradient(
                         colors = listOf(baseColor.copy(alpha = 0.18f), Color.Transparent),
-                        radius = 100f
+                        radius = diameter.value * 0.68f
                     )
                 )
         )
 
-        Canvas(modifier = Modifier.size(148.dp)) {
-            val strokeWidth = 13.dp.toPx()
-            val inset = strokeWidth / 2
+        Canvas(modifier = Modifier.size(diameter)) {
+            val strokePx = strokeWidth.toPx()
+            val inset = strokePx / 2
 
-            // Track
             drawArc(
                 color = AppBorder,
                 startAngle = -90f,
                 sweepAngle = 360f,
                 useCenter = false,
                 topLeft = Offset(inset, inset),
-                size = Size(size.width - strokeWidth, size.height - strokeWidth),
-                style = Stroke(width = strokeWidth, cap = StrokeCap.Round)
+                size = Size(size.width - strokePx, size.height - strokePx),
+                style = Stroke(width = strokePx, cap = StrokeCap.Round)
             )
 
-            // Progress arc with a subtle gradient sweep for depth
             drawArc(
                 brush = Brush.sweepGradient(
                     0f to baseColor.copy(alpha = 0.55f),
@@ -81,14 +94,16 @@ fun WinRateGauge(winRate: Int, modifier: Modifier = Modifier) {
                 sweepAngle = animatedSweep,
                 useCenter = false,
                 topLeft = Offset(inset, inset),
-                size = Size(size.width - strokeWidth, size.height - strokeWidth),
-                style = Stroke(width = strokeWidth, cap = StrokeCap.Round)
+                size = Size(size.width - strokePx, size.height - strokePx),
+                style = Stroke(width = strokePx, cap = StrokeCap.Round)
             )
         }
 
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Text("$winRate%", fontSize = 30.sp, fontWeight = FontWeight.Bold, fontFamily = MonoFont, color = AppText)
-            Text("WIN RATE", fontSize = 10.sp, color = AppMuted, letterSpacing = 1.5.sp, fontWeight = FontWeight.Medium)
+            Text("$winRate%", fontSize = valueFontSize, fontWeight = FontWeight.Bold, fontFamily = MonoFont, color = AppText)
+            if (showLabel) {
+                Text("WIN RATE", fontSize = labelFontSize, color = AppMuted, letterSpacing = 1.2.sp, fontWeight = FontWeight.Medium)
+            }
         }
     }
 }

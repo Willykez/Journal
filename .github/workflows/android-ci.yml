@@ -1,5 +1,14 @@
 name: Android CI
 
+# Builds a debug APK on every push and pull request, and uploads it as a
+# downloadable artifact from the workflow run.
+#
+# This installs Gradle directly rather than calling ./gradlew — the wrapper
+# jar isn't committed yet (see gradle/wrapper/README_MISSING_JAR.md). Once
+# you've generated a real gradle-wrapper.jar locally via Android Studio and
+# committed it, you can switch the build step below to `./gradlew` instead
+# if you prefer — either approach works fine.
+
 on:
   push:
     branches: [ "main" ]
