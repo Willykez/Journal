@@ -1,0 +1,20 @@
+<resources>
+    <!--
+        Minimal window theme. This app's entire UI is built with Jetpack
+        Compose (setContent {} in MainActivity), so this theme only needs to
+        control the Activity window itself before Compose takes over — no
+        action bar, dark background to avoid a white flash on cold start.
+
+        Deliberately extends a platform theme (android:Theme...) rather than
+        a Material Components theme (Theme.Material3....) — the latter comes
+        from the com.google.android.material:material XML library, which
+        this project does not depend on (it uses Compose Material3 instead,
+        a separate artifact that has no XML styles). Mixing the two causes
+        "resource style/... not found" at build time.
+    -->
+    <style name="Theme.ForexTradeAnalyst" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/app_background</item>
+        <item name="android:statusBarColor">@color/app_background</item>
+        <item name="android:navigationBarColor">@color/app_background</item>
+    </style>
+</resources>
