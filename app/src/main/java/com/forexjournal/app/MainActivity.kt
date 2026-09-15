@@ -21,14 +21,18 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.Dashboard
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.ReceiptLong
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
@@ -42,10 +46,12 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
+import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -57,12 +63,13 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.forexjournal.app.ui.components.AppDrawer
+import com.forexjournal.app.ui.components.DrawerDestination
 import com.forexjournal.app.ui.components.LogTradeDialog
 import com.forexjournal.app.ui.screens.CalendarScreen
 import com.forexjournal.app.ui.screens.OverviewScreen
 import com.forexjournal.app.ui.screens.TradesScreen
 import com.forexjournal.app.ui.theme.AppBg
-import com.forexjournal.app.ui.theme.AppGreen
 import com.forexjournal.app.ui.theme.AppMuted
 import com.forexjournal.app.ui.theme.AppPanel
 import com.forexjournal.app.ui.theme.AppRed
@@ -70,6 +77,7 @@ import com.forexjournal.app.ui.theme.AppTeal
 import com.forexjournal.app.ui.theme.AppText
 import com.forexjournal.app.ui.theme.ForexTradeAnalystTheme
 import com.forexjournal.app.viewmodel.DashboardViewModel
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -84,129 +92,152 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class Tab(val label: String) { OVERVIEW("Overview"), TRADES("Trades"), CALENDAR("Calendar") }
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun AppRoot(viewModel: DashboardViewModel = viewModel()) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
-    var currentTab by remember { mutableStateOf(Tab.OVERVIEW) }
+    var currentDestination by remember { mutableStateOf(DrawerDestination.OVERVIEW) }
     var showSettings by remember { mutableStateOf(false) }
     var showLogTrade by remember { mutableStateOf(false) }
 
+    val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
+    val scope = rememberCoroutineScope()
     val pullState = rememberPullToRefreshState()
 
-    Scaffold(
-        containerColor = AppBg,
-        topBar = {
-            Column {
-                TopAppBar(
-                    title = {
-                        Column {
-                            Text("Trade Journal Analyst", fontWeight = FontWeight.Bold, fontSize = 16.sp, color = AppText)
-                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 2.dp)) {
-                                val liveColor = if (uiState.error != null) AppRed else AppGreen
-                                if (!uiState.isLoading) {
-                                    PulsingDot(color = liveColor)
-                                    androidx.compose.foundation.layout.Spacer(modifier = Modifier.padding(start = 5.dp))
-                                }
-                                val statusText = when {
-                                    uiState.isLoading -> "Loading…"
-                                    uiState.error != null -> "Sync failed"
-                                    else -> "${uiState.trades.size} trades \u00B7 live"
-                                }
-                                Text(statusText, fontSize = 10.sp, color = if (uiState.error != null) AppRed else AppMuted)
-                            }
-                        }
-                    },
-                    actions = {
-                        TextButton(onClick = { showSettings = true }) {
-                            Icon(Icons.Filled.Settings, contentDescription = "Settings", tint = AppTeal, modifier = Modifier.size(15.dp))
-                            Text(" Connect", color = AppTeal, fontSize = 12.sp, fontWeight = FontWeight.Medium)
-                        }
-                    },
-                    colors = TopAppBarDefaults.topAppBarColors(containerColor = AppPanel, titleContentColor = AppText)
-                )
-                // Thin gradient shadow line for depth under the app bar
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .size(3.dp)
-                        .background(
-                            androidx.compose.ui.graphics.Brush.verticalGradient(
-                                listOf(Color.Black.copy(alpha = 0.25f), Color.Transparent)
-                            )
-                        )
-                )
-            }
-        },
-        bottomBar = {
-            NavigationBar(containerColor = AppPanel, tonalElevation = 8.dp) {
-                NavigationBarItem(
-                    selected = currentTab == Tab.OVERVIEW,
-                    onClick = { currentTab = Tab.OVERVIEW },
-                    icon = { Icon(Icons.Filled.Dashboard, contentDescription = null) },
-                    label = { Text(Tab.OVERVIEW.label, fontSize = 10.sp) },
-                    colors = navColors()
-                )
-                NavigationBarItem(
-                    selected = currentTab == Tab.TRADES,
-                    onClick = { currentTab = Tab.TRADES },
-                    icon = { Icon(Icons.Filled.ReceiptLong, contentDescription = null) },
-                    label = { Text(Tab.TRADES.label, fontSize = 10.sp) },
-                    colors = navColors()
-                )
-                NavigationBarItem(
-                    selected = currentTab == Tab.CALENDAR,
-                    onClick = { currentTab = Tab.CALENDAR },
-                    icon = { Icon(Icons.Filled.CalendarMonth, contentDescription = null) },
-                    label = { Text(Tab.CALENDAR.label, fontSize = 10.sp) },
-                    colors = navColors()
-                )
-            }
-        },
-        floatingActionButton = {
-            ExtendedFloatingActionButton(
-                onClick = { showLogTrade = true },
-                containerColor = AppTeal,
-                contentColor = AppBg,
-                icon = { Icon(Icons.Filled.Add, contentDescription = null) },
-                text = { Text("Log Execution", fontWeight = FontWeight.Bold, fontSize = 13.sp) }
+    ModalNavigationDrawer(
+        drawerState = drawerState,
+        drawerContent = {
+            AppDrawer(
+                metrics = uiState.metrics,
+                tradeCount = uiState.trades.size,
+                currentDestination = currentDestination,
+                onDestinationSelected = { dest ->
+                    currentDestination = dest
+                    scope.launch { drawerState.close() }
+                },
+                onConnectClick = {
+                    scope.launch { drawerState.close() }
+                    showSettings = true
+                }
             )
         }
-    ) { padding ->
-        Box(modifier = Modifier.fillMaxSize().padding(padding)) {
-            PullToRefreshBox(
-                isRefreshing = uiState.isRefreshing,
-                onRefresh = { viewModel.loadData(isManualRefresh = true) },
-                state = pullState,
-                modifier = Modifier.fillMaxSize()
-            ) {
-                when {
-                    uiState.isLoading -> {
-                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            CircularProgressIndicator(color = AppTeal)
+    ) {
+        Scaffold(
+            containerColor = AppBg,
+            topBar = {
+                Column {
+                    TopAppBar(
+                        navigationIcon = {
+                            IconButton(onClick = { scope.launch { drawerState.open() } }) {
+                                Icon(Icons.Filled.Menu, contentDescription = "Menu", tint = AppText)
+                            }
+                        },
+                        title = {
+                            Column {
+                                Text("Trade Journal Analyst", fontWeight = FontWeight.Bold, fontSize = 16.sp, color = AppText)
+                                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 2.dp)) {
+                                    val liveColor = if (uiState.error != null) AppRed else com.forexjournal.app.ui.theme.AppGreen
+                                    if (!uiState.isLoading) {
+                                        PulsingDot(color = liveColor)
+                                        androidx.compose.foundation.layout.Spacer(modifier = Modifier.padding(start = 5.dp))
+                                    }
+                                    val statusText = when {
+                                        uiState.isLoading -> "Loading…"
+                                        uiState.error != null -> "Sync failed"
+                                        else -> "${uiState.trades.size} trades \u00B7 live"
+                                    }
+                                    Text(statusText, fontSize = 10.sp, color = if (uiState.error != null) AppRed else AppMuted)
+                                }
+                            }
+                        },
+                        actions = {
+                            TextButton(onClick = { showSettings = true }) {
+                                Icon(Icons.Filled.Settings, contentDescription = "Settings", tint = AppTeal, modifier = Modifier.size(15.dp))
+                                Text(" Connect", color = AppTeal, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                            }
+                        },
+                        colors = TopAppBarDefaults.topAppBarColors(containerColor = AppPanel, titleContentColor = AppText)
+                    )
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .size(3.dp)
+                            .background(
+                                androidx.compose.ui.graphics.Brush.verticalGradient(
+                                    listOf(Color.Black.copy(alpha = 0.25f), Color.Transparent)
+                                )
+                            )
+                    )
+                }
+            },
+            bottomBar = {
+                NavigationBar(containerColor = AppPanel, tonalElevation = 8.dp) {
+                    NavigationBarItem(
+                        selected = currentDestination == DrawerDestination.OVERVIEW,
+                        onClick = { currentDestination = DrawerDestination.OVERVIEW },
+                        icon = { Icon(Icons.Filled.Dashboard, contentDescription = null) },
+                        label = { Text("Overview", fontSize = 10.sp) },
+                        colors = navColors()
+                    )
+                    NavigationBarItem(
+                        selected = currentDestination == DrawerDestination.TRADES,
+                        onClick = { currentDestination = DrawerDestination.TRADES },
+                        icon = { Icon(Icons.Filled.ReceiptLong, contentDescription = null) },
+                        label = { Text("Trades", fontSize = 10.sp) },
+                        colors = navColors()
+                    )
+                    NavigationBarItem(
+                        selected = currentDestination == DrawerDestination.CALENDAR,
+                        onClick = { currentDestination = DrawerDestination.CALENDAR },
+                        icon = { Icon(Icons.Filled.CalendarMonth, contentDescription = null) },
+                        label = { Text("Calendar", fontSize = 10.sp) },
+                        colors = navColors()
+                    )
+                }
+            },
+            floatingActionButton = {
+                ExtendedFloatingActionButton(
+                    onClick = { showLogTrade = true },
+                    containerColor = AppTeal,
+                    contentColor = AppBg,
+                    icon = { Icon(Icons.Filled.Add, contentDescription = null) },
+                    text = { Text("Log Execution", fontWeight = FontWeight.Bold, fontSize = 13.sp) }
+                )
+            }
+        ) { padding ->
+            Box(modifier = Modifier.fillMaxSize().padding(padding)) {
+                PullToRefreshBox(
+                    isRefreshing = uiState.isRefreshing,
+                    onRefresh = { viewModel.loadData(isManualRefresh = true) },
+                    state = pullState,
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    when {
+                        uiState.isLoading -> {
+                            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                CircularProgressIndicator(color = AppTeal)
+                            }
                         }
-                    }
-                    uiState.error != null && uiState.trades.isEmpty() -> {
-                        ErrorState(message = uiState.error!!, onRetry = { viewModel.loadData() })
-                    }
-                    uiState.metrics == null -> {
-                        EmptyState(onLogTrade = { showLogTrade = true })
-                    }
-                    else -> {
-                        androidx.compose.animation.AnimatedContent(
-                            targetState = currentTab,
-                            transitionSpec = {
-                                (androidx.compose.animation.fadeIn(tween(220)))
-                                    .togetherWith(androidx.compose.animation.fadeOut(tween(140)))
-                            },
-                            label = "tabTransition"
-                        ) { tab ->
-                            when (tab) {
-                                Tab.OVERVIEW -> OverviewScreen(metrics = uiState.metrics!!, analysis = uiState.analysis)
-                                Tab.TRADES -> TradesScreen(trades = uiState.trades)
-                                Tab.CALENDAR -> CalendarScreen(trades = uiState.trades)
+                        uiState.error != null && uiState.trades.isEmpty() -> {
+                            ErrorState(message = uiState.error!!, onRetry = { viewModel.loadData() })
+                        }
+                        uiState.metrics == null -> {
+                            EmptyState(onLogTrade = { showLogTrade = true })
+                        }
+                        else -> {
+                            androidx.compose.animation.AnimatedContent(
+                                targetState = currentDestination,
+                                transitionSpec = {
+                                    (androidx.compose.animation.fadeIn(tween(220)))
+                                        .togetherWith(androidx.compose.animation.fadeOut(tween(140)))
+                                },
+                                label = "tabTransition"
+                            ) { dest ->
+                                when (dest) {
+                                    DrawerDestination.OVERVIEW -> OverviewScreen(metrics = uiState.metrics!!, analysis = uiState.analysis)
+                                    DrawerDestination.TRADES -> TradesScreen(trades = uiState.trades)
+                                    DrawerDestination.CALENDAR -> CalendarScreen(trades = uiState.trades)
+                                }
                             }
                         }
                     }
