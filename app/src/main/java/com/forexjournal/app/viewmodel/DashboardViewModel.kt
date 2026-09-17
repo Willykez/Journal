@@ -86,6 +86,36 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    fun deleteTrade(trade: Trade, onResult: (success: Boolean, error: String?) -> Unit) {
+        val rowIndex = trade.rowIndex
+        if (rowIndex == null) {
+            onResult(false, "Missing row reference — pull to refresh and try again.")
+            return
+        }
+
+        val url = _uiState.value.url
+
+        // Optimistic removal so the swipe feels instant, rather than waiting on the network.
+        val previousTrades = _uiState.value.trades
+        val optimisticTrades = previousTrades.filterNot { it.rowIndex == rowIndex }
+        _uiState.update { it.copy(trades = optimisticTrades, metrics = MetricsCalculator.compute(optimisticTrades)) }
+
+        viewModelScope.launch {
+            val result = repository.deleteTrade(url, rowIndex)
+            result.onSuccess {
+                onResult(true, null)
+                // Deleting a row shifts every row below it up by one, so every remaining
+                // trade's cached rowIndex is now stale — a real refresh is required before
+                // another delete (or a log) can target the correct row.
+                loadData(isManualRefresh = true)
+            }.onFailure { e ->
+                // Roll back the optimistic removal since the delete didn't actually happen.
+                _uiState.update { it.copy(trades = previousTrades, metrics = MetricsCalculator.compute(previousTrades)) }
+                onResult(false, e.message)
+            }
+        }
+    }
+
     companion object {
         const val DEFAULT_URL =
             "https://script.google.com/macros/s/AKfycby9953ycUqa3gLBzxxG8nNcxKOPp4MMxoRH9BxKpy-CNCGdHprtm3E1H3JZQMmTZs_FlQ/exec"

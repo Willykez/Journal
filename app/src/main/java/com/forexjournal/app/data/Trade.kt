@@ -15,7 +15,8 @@ data class Trade(
     val takeProfit: Double? = null,
     val pnl: Double = 0.0,
     val session: String = "",
-    val notes: String = ""
+    val notes: String = "",
+    val rowIndex: Int? = null // sheet row number, returned by doGet - needed to target a delete
 ) {
     val isWin: Boolean get() = pnl >= 0
     val isLong: Boolean get() = direction.equals("Long", ignoreCase = true)

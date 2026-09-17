@@ -235,7 +235,11 @@ private fun AppRoot(viewModel: DashboardViewModel = viewModel()) {
                             ) { dest ->
                                 when (dest) {
                                     DrawerDestination.OVERVIEW -> OverviewScreen(metrics = uiState.metrics!!, analysis = uiState.analysis)
-                                    DrawerDestination.TRADES -> TradesScreen(trades = uiState.trades)
+                                    DrawerDestination.TRADES -> TradesScreen(
+                                        trades = uiState.trades,
+                                        onDelete = { trade, onResult -> viewModel.deleteTrade(trade, onResult) },
+                                        onUndoDelete = { trade, onResult -> viewModel.submitTrade(trade, onResult) }
+                                    )
                                     DrawerDestination.CALENDAR -> CalendarScreen(trades = uiState.trades)
                                 }
                             }

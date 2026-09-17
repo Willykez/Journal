@@ -56,7 +56,8 @@ class TradeRepository {
                         takeProfit = o.optDoubleOrNull("TakeProfit"),
                         pnl = o.optDouble("PnL", 0.0),
                         session = o.optString("Session", ""),
-                        notes = o.optString("Notes", "")
+                        notes = o.optString("Notes", ""),
+                        rowIndex = if (o.has("RowIndex")) o.optInt("RowIndex") else null
                     )
                 )
             }
@@ -122,6 +123,41 @@ class TradeRepository {
                 Result.success(Unit)
             } else {
                 Result.failure(Exception(result.optString("error", "Server rejected the trade")))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        } finally {
+            connection?.disconnect()
+        }
+    }
+    suspend fun deleteTrade(urlStr: String, rowIndex: Int): Result<Unit> = withContext(Dispatchers.IO) {
+        var connection: HttpURLConnection? = null
+        try {
+            val url = URL(urlStr)
+            connection = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                doOutput = true
+                setRequestProperty("Content-Type", "application/json")
+                connectTimeout = 15000
+                readTimeout = 15000
+            }
+
+            val payload = JSONObject().apply {
+                put("action", "delete")
+                put("RowIndex", rowIndex)
+            }
+
+            connection.outputStream.use { it.write(payload.toString().toByteArray(Charsets.UTF_8)) }
+
+            val code = connection.responseCode
+            val stream = if (code in 200..299) connection.inputStream else connection.errorStream
+            val body = stream?.bufferedReader()?.use { it.readText() } ?: ""
+            val result = JSONObject(body)
+
+            if (result.optBoolean("ok", false)) {
+                Result.success(Unit)
+            } else {
+                Result.failure(Exception(result.optString("error", "Server rejected the delete")))
             }
         } catch (e: Exception) {
             Result.failure(e)
